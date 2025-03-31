@@ -1,0 +1,313 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Feb 13 20:22:15 2025
+
+@author: hnf514
+"""
+
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Jan 30 17:17:51 2025
+@author: hnf514
+"""
+# -*- coding: utf-8 -*-
+"""
+Created on Fri Nov 29 08:23:02 2024
+@author: hnf514 : VAHID KOUH DARAGH
+"""
+#r-App
+# -*- coding: utf-8 -*-
+"""
+"""
+###########LATEST UPDATED DIFFERENT VALUES IN dl
+import requests
+import pandas as pd
+
+from requests.adapters import HTTPAdapter
+from requests.exceptions import ChunkedEncodingError, RequestException
+from urllib3.util.retry import Retry
+import time
+from datetime import datetime
+import random
+import matplotlib.pyplot as plt
+import time
+import pandas as pd
+NUMBERW = 0
+
+# Retry configuration
+retry_strategy = Retry(
+    total=5,
+    backoff_factor=1,
+    status_forcelist=[500, 502, 503, 504],
+)
+
+session = requests.Session()
+session.mount("http://", HTTPAdapter(max_retries=retry_strategy))
+
+
+
+elements = {
+    "s0_cellcu":{
+        "ManagedElement":"1193046",
+        "GnbDuFunction":"1",
+        "NrCellDu": "1",
+        "NESPolicy":"1",
+        },
+    "s0_sector":{        "ManagedElement":"1193046",
+            "GnbDuFunction":"1",
+            "NrCellDu": "1",
+            "NrSectorCarrier":"1",
+        }
+    }
+
+
+def get_varia_and_mask(input_time):
+    """
+    Takes a datetime object and returns the corresponding VARIA value
+    and mask_value based on the time ranges:
+    - 12 AM to 8 AM: VARIA = 1, mask_value = "111111100000000000000000000000000000000000000000000000000000000"
+    - 8 AM to 2 PM: VARIA = 2, mask_value = "1111111111111111111111111111111100000000000000000000000000000000"
+    - 2 PM to 5 PM: VARIA = 3, mask_value = <Define further if needed>
+    - 5 PM to 12 AM: VARIA = 4, mask_value = <Define further if needed>
+    """
+    # Extract the hour from the input time
+    hour = input_time.hour
+    mask_values_list = ["1111111111111111111111111111111111111111111111111111111111111111",
+    "1111111100000000000000000000000000000000000000000000000000000000",
+    "1111111111111111111111111111111100000000000000000000000000000000",
+     "1111111111111111000000000000000000000000000000000000000000000000"]
+# 5-minute simulation with 5 changes (1 change per minute)
+    for i in range(1):
+         mask_value = random.choice(mask_values_list)  # Select a random mask value
+         #print(f"Iteration {i+1}: mask_value changed to {mask_value}")
+
+    # Wait for 1 minute before the next change
+         time.sleep(7.5)  # 60 seconds (adjust if needed)
+    # Determine the VARIA value and mask_value
+    if 0 <= hour < 8:  # Between midnight and 8 AM
+        varia = 1
+        mask_value = mask_value
+    elif 8 <= hour < 15:  # Between 8 AM and 2 PM
+        varia = 2
+        mask_value = mask_value
+    elif 15 <= hour < 17:  # Between 2 PM and 5 PM
+        varia = 3
+        #mask_value = "Define mask for VARIA 3 here"
+        mask_value = mask_value
+    else:  # Between 5 PM and midnight
+        varia = 4
+        #mask_value = "Define mask for VARIA 4 here"
+        mask_value = mask_value
+
+    return varia, mask_value
+
+def comm_endpoint(mask1, element_name="s0_cellcu"):#1#,mask2, mask3):
+    mask_value = mask1
+    
+
+    action_pow = {
+
+        "attributes": {
+
+           "policyType":	"TRX_CONTROL",
+           # "sleepMode":	"SLEEP_MODE0",
+           "antennaMaskName":	"S1/B39/C1:8x8",
+            "antennaMask": mask_value
+        }
+    }
+
+    txt_param = ",".join([f"{k}={v}" for k, v in elements[element_name].items()])
+    put_url = f"http://144.32.33.150/O1/CM/{txt_param}"
+
+    put_url = "http://144.32.33.150/O1/CM/ManagedElement=1193046,GnbDuFunction=1,NrSectorCarrier=1"
+    put_url = "http://144.32.33.150/O1/CM/ManagedElement=1193046,GnbDuFunction=1,NrCellDu=1,NESPolicy=1"
+    put_url2 = "http://144.32.33.150/sba/influx/query?q=SELECT%20*%20FROM%20CellReports%20GROUP%20BY%20%22Viavi.Cell.Name%22%20ORDER%20BY%20time%20DESC%20LIMIT%2040"
+
+    try:
+        put_response = session.put(put_url, json=action_pow, timeout=10) 
+
+        if put_response.status_code == 200:
+            print("Request was successful.")
+            print(action_pow)
+        else:
+            print("Failed, response code =", put_response.status_code)
+            print("Response content:", put_response.text)
+        
+        response = session.get(put_url2, timeout=10, stream=True)
+        response.raise_for_status()
+    except (ChunkedEncodingError, RequestException) as e:
+        print(f"Error in comm_endpoint: {e}")
+        return
+
+def request_URL(url):
+    try:
+        response = session.get(url, timeout=10, stream=True)
+        response.raise_for_status()
+        json_data = response.json()
+        print("Data fetched successfully:", response.status_code)
+        return json_data
+    except (ChunkedEncodingError, RequestException) as e:
+        print(f"Error fetching data from {url}: {e}")
+        return None
+
+def count_and_find_none(rows, counter_none):
+    request_again = False
+    for item in rows:
+        for values in item:
+            if values is None:
+                counter_none += 1
+                request_again = True
+    if counter_none > 1:
+        raise ValueError("More than 2 Attributes got None values in series data")
+    return request_again
+
+def process_series_with_order_and_exception_handling(series):
+    df = pd.DataFrame(series['values'], columns=series['columns'])
+    desired_order = [
+        "time", "Viavi.Cell.Name", "RRU.PrbUsedDl", "RRU.PrbUsedUl", "PEE.AvgPower", 
+        "DRB.UEThpDl", "Viavi.Geo.x", "Viavi.Geo.y", "Viavi.PEE.EnergyEfficiency", 
+        "Viavi.QoS.Score", "Viavi.Radio.antennaType", "Viavi.Radio.azimuth", 
+        "Viavi.Radio.power"
+    ]
+
+    viavi_cell_name = series['tags'].get("Viavi.Cell.Name", "Unknown")
+    if 'Viavi.Cell.Name' not in df.columns:
+        df.insert(1, 'Viavi.Cell.Name', viavi_cell_name)
+
+    for column in desired_order:
+        if column not in df.columns:
+            df[column] = None
+
+    df = df[[col for col in desired_order if col in df.columns]]
+    df['series_name'] = series['name']
+    return df
+
+def save_to_csv(df, report_num):
+    csv_file_name = f"CellReports_{report_num}.csv"
+    df.to_csv(csv_file_name, index=False)
+
+
+base_url = "http://144.32.33.150/sba/influx/query?q=SELECT%20*%20FROM%20CellReports%20GROUP%20BY%20%22Viavi.Cell.Name%22%20ORDER%20BY%20time%20DESC%20LIMIT%20"
+num_reports = 1  # Adjust this value as needed
+if __name__ == "__main__":
+    # Define the mask value for when the condition is met
+    #X=1;
+    PAVE=0;
+    avg_power_list=[];
+    current_time = datetime.now()
+    #varia, mask_value = get_varia_and_mask(current_time)
+
+
+    while True:
+        current_time = datetime.now()
+
+        varia, mask_value = get_varia_and_mask(current_time)
+        for i in range(1, num_reports + 1):
+            url = f"{base_url}{i}"
+            json_data = request_URL(url)
+            
+            if json_data and 'results' in json_data and json_data['results'][0].get('series'):
+                # Process data
+                final_df_exception_handling = pd.concat(
+                    [process_series_with_order_and_exception_handling(s) for s in json_data['results'][0]['series']],
+                    ignore_index=True
+                )
+                
+                # Filter for only rows with "S3/N77/C1" in the "Viavi.Cell.Name" column
+                final_df_exception_handling = final_df_exception_handling[
+                    final_df_exception_handling["Viavi.Cell.Name"] == "S1/B39/C1"
+                ]
+                
+                # Save filtered data to a CSV file
+                save_to_csv(final_df_exception_handling, i)
+
+                # Ensure "DRB.UEThpDl" column is numeric for accurate averaging
+                #final_df_exception_handling["PEE.AvgPower"] = pd.to_numeric(final_df_exception_handling["PEE.AvgPower"], errors='coerce')
+                final_df_exception_handling["PEE.AvgPower"] = pd.to_numeric(final_df_exception_handling["PEE.AvgPower"], errors='coerce')
+                final_df_exception_handling["DRB.UEThpDl"] = pd.to_numeric(final_df_exception_handling["DRB.UEThpDl"], errors='coerce')
+
+        # Print each value of "DRB.UEThpDl" separately
+                print("DRB.UEThpDl and PEE.AvgPower values:")
+                
+                for ue_thp_dl, avg_power in zip(final_df_exception_handling["DRB.UEThpDl"], final_df_exception_handling["PEE.AvgPower"]):
+                 print(f"DRB.UEThpDl: {ue_thp_dl}, PEE.AvgPower: {avg_power}")
+                 print ("Checking...")
+                  ##vim##print(value)
+                avg_power_list.append(avg_power)  # Store avg_power in the list  
+                PAVE=PAVE+avg_power
+                print ("paveh paveh:", PAVE)
+                NUMBERW += 1
+
+                # Calculate the average, ignoring any NaN values
+                average_drb_UEThpDl = final_df_exception_handling["DRB.UEThpDl"].mean()
+
+                print(f"Average DRB.UEThpDl: {average_drb_UEThpDl}")
+
+                # Check if the average is above 0.008 and take action if true
+                if average_drb_UEThpDl <0.0000003 or varia==1:
+                    varia, mask_value = get_varia_and_mask(current_time)
+                    comm_endpoint(mask_value)
+
+                    #print("Average DRB.UEThpDl is too low. Endpoint called with mask_value:", mask_value)
+                    print("It is midnight ot early morning  and trfafic load should be Low. Checking with current load , CORESSPONDING mMIMO order will be applied based on the current load if it differs with default value...  Endpoint called with mask_value:", mask_value)
+                    
+                elif 0.0000003 < average_drb_UEThpDl < 0.03 or varia==2:
+                    varia, mask_value = get_varia_and_mask(current_time)
+                    comm_endpoint(mask_value)
+                    print("It is morning--Afternoon  and trfafic load should be medium. Checking with current load , CORESSPONDING mMIMO order will be applied based on the current load if it differs with default value...  Endpoint called with mask_value:", mask_value)
+                elif  average_drb_UEThpDl > 0.03 or varia==3:
+                    varia, mask_value = get_varia_and_mask(current_time)
+                    comm_endpoint(mask_value)
+                    print("It is Late afternoon-evening  and trfafic load should be High. Checking with current load , CORESSPONDING mMIMO order will be applied based on the current load if it differs with default value...  Endpoint called with mask_value:", mask_value)
+                    
+                    #print("Average DRB.UEThpDl is too High. Endpoint called with mask_value:", mask_value)  
+                elif  varia==4:
+                    varia, mask_value = get_varia_and_mask(current_time)
+                    comm_endpoint(mask_value)
+                    print("It is Late evening to midnight  and trfafic load should be Medimu. Checking with current load , CORESSPONDING mMIMO order will be applied based on the current load if it differs with default value...  Endpoint called with mask_value:", mask_value)
+                print(f"Total loop iterations: {NUMBERW}")   
+                    #print("Average DRB.UEThpDl is Medium, late evening . Endpoint called with mask_value:", mask_value)                     
+            else:
+                print(f"No data returned for report {i}.")
+        
+        # Wait for 10 milliseconds before starting the next cycle
+        PAVE_Ave=PAVE/NUMBERW;
+        print("PAVE_Ave.",PAVE_Ave)
+        print("avg_power_list.",avg_power_list)
+        Power_Saving_Percentage=((max(avg_power_list)-PAVE_Ave)/max(avg_power_list))*100;
+        print("Power_Saving_Percentage.",Power_Saving_Percentage,"%")
+        x_positions = range(len(avg_power_list))  # [0,1,2,3,4,5,6,7]
+
+# Define colors for variety (optional)
+        colors = ['blue', 'red', 'green', 'orange', 'purple', 'yellow', 'cyan', 'magenta']
+
+# Create the bar chart
+        plt.figure(figsize=(8, 5))
+        plt.bar(x_positions, avg_power_list, color=colors, edgecolor='black')
+
+# Set X-ticks to display bar order
+        plt.xticks(x_positions, [f"p-{i+1}" for i in x_positions])
+
+# Labels and title
+        plt.xlabel("Power consumption Average")
+        plt.ylabel("Watt")
+        plt.title("Cell Average Power Consumption different time period updates")
+        plt.grid(axis='y', linestyle='--', alpha=0.7)
+
+# Show plot
+        sizes = [Power_Saving_Percentage, 100-Power_Saving_Percentage]  # 30% and 70%
+        labels = ['Power saving percentage', 'Consumed power percentage%']
+        colors = ['blue', 'lightgray']  # Colors for segments
+
+# Create the pie chart
+        plt.figure(figsize=(6,6))
+        plt.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90, wedgeprops={'edgecolor': 'black'})
+
+# Title
+        plt.title("Pie Chart Representing 30%")
+
+# Show the pie chart
+        plt.show()
+
+
+    # Show the histogram
