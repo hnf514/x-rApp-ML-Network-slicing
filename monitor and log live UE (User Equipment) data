@@ -1,0 +1,68 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Mar 13 13:45:18 2025
+
+@author: hnf514
+"""
+
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Mar 11 16:44:18 2025
+
+@author: hnf514
+"""
+
+import requests
+import pandas as pd
+import json
+import time
+import os
+
+# Step 1: Define the URL
+url = "http://144.32.33.150/sba/influx/query?q=SELECT+%2A+FROM+UEReports+ORDER+BY+time+DESC+LIMIT+100"
+
+# Step 2: Ensure the directory exists
+save_dir = "LIVE_UE"
+os.makedirs(save_dir, exist_ok=True)
+
+# Step 3: Function to Fetch and Process Live Data
+def fetch_live_ue_data(file_index):
+    response = requests.get(url)
+    if response.status_code == 200:
+        data = response.json()  # Parse the JSON response
+        
+        # Step 4: Extract the relevant data from JSON
+        try:
+            series = data.get("results", [])[0].get("series", [])[0]
+            columns = series.get("columns", [])
+            values = series.get("values", [])
+        except (IndexError, KeyError):
+            print("No valid data found in the response.")
+            return file_index
+
+        # Step 5: Add a column for UE number
+        ue_numbers = list(range(1, len(values) + 1))  # Generate UE numbers sequentially
+        
+        # Step 6: Convert to DataFrame
+        df = pd.DataFrame(values, columns=columns)
+        df.insert(0, "UE Number", ue_numbers)  # Insert UE number as the first column
+        
+        # Step 7: Save DataFrame to dynamically named CSV
+        file_index += 1  # Increment file index
+        csv_filename = os.path.join(save_dir, f"Live_UEReports{file_index}.csv")
+        df.to_csv(csv_filename, index=False)
+        print(f"Live data saved to '{csv_filename}'")
+    else:
+        print(f"Failed to fetch data. HTTP Status Code: {response.status_code}")
+    
+    return file_index
+
+# Step 8: Run Live Data Extraction at Regular Intervals
+if __name__ == "__main__":
+    file_index = 0  # Initialize file index
+    try:
+        while True:
+            file_index = fetch_live_ue_data(file_index)
+            time.sleep(5)  # Fetch data every 5 seconds
+    except KeyboardInterrupt:
+        print("Live UE data extraction stopped.")
