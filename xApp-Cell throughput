@@ -1,0 +1,278 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Dec 12 12:06:38 2024
+
+@author: hnf514
+"""
+
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Dec 12 09:05:32 2024
+
+@author: hnf514
+"""
+
+# -*- coding: utf-8 -*-
+"""
+
+"""
+###########LATEST UPDATED DIFFERENT VALUES IN dl
+import os
+import requests
+import pandas as pd
+from urllib.parse import urlparse, parse_qs
+import json
+from requests.adapters import HTTPAdapter
+from requests.exceptions import ChunkedEncodingError, RequestException
+from urllib3.util.retry import Retry
+import time
+import random
+# Retry configuration
+retry_strategy = Retry(
+    total=5,
+    backoff_factor=1,
+    status_forcelist=[500, 502, 503, 504],
+)
+
+session = requests.Session()
+session.mount("http://", HTTPAdapter(max_retries=retry_strategy))
+
+elements = {
+    "s0_cellcu":{
+        "ManagedElement":"1193046",
+        "GnbDuFunction":"1",
+        "NrCellDu": "1",
+        "NESPolicy":"1",
+        },
+    "s1_cellcu":{        
+        "ManagedElement":"1193046",
+            "GnbDuFunction":"2",
+            "NrCellDu": "2",
+            "NESPolicy":"1",
+        },
+    "s2_cellcu":{
+        "ManagedElement":"1193046",
+        "GnbDuFunction":"3",
+        "NrCellDu": "3",
+        "NESPolicy":"1",
+        },
+    "s3_cellcu":{        "ManagedElement":"1193046",
+            "GnbDuFunction":"4",
+            "NrCellDu": "5",
+            "NrSectorCarrier":"1",
+        }
+    
+    }
+
+def comm_endpoint(mask, element_name):
+    # Define antennaMaskName based on i
+    if element_name == "s0_cellcu":
+        antennaMaskName = "S1/B39/C1:8x8"
+    elif element_name == "s1_cellcu":
+        antennaMaskName = "S2/B40/C1:8x8"
+    elif element_name == "s2_cellcu":
+        antennaMaskName = "S3/B41/C1:8x8"
+    else:
+        raise ValueError(f"Invalid value for i: {i}. Expected 1, 2, or 3.")
+
+    # Define the action payload
+    action_pow = {
+        "attributes": {
+            "policyType": "TRX_CONTROL",
+            "antennaMaskName": antennaMaskName,
+            "antennaMask": mask,
+        }
+    }
+
+    txt_param = ",".join([f"{k}={v}" for k, v in elements[element_name].items()])
+    put_url = f"http://144.32.33.150/O1/CM/{txt_param}"
+
+    put_url2 = "http://144.32.33.150/sba/influx/query?q=SELECT%20*%20FROM%20CellReports%20GROUP%20BY%20%22Viavi.Cell.Name%22%20ORDER%20BY%20time%20DESC%20LIMIT%2040"
+
+    try:
+        put_response = session.put(put_url, json=action_pow, timeout=10) 
+
+        if put_response.status_code == 200:
+            print("Request was successful.")
+
+        else:
+            print("Failed, response code =", put_response.status_code)
+            print("Response content:", put_response.text)
+        
+        response = session.get(put_url2, timeout=10, stream=True)
+        response.raise_for_status()
+    except (ChunkedEncodingError, RequestException) as e:
+        print(f"Error in comm_endpoint: {e}")
+        return
+
+def request_URL(url):
+    try:
+        response = session.get(url, timeout=10, stream=True)
+        response.raise_for_status()
+        json_data = response.json()
+        print("Data fetched successfully:", response.status_code)
+        return json_data
+    except (ChunkedEncodingError, RequestException) as e:
+        print(f"Error fetching data from {url}: {e}")
+        return None
+
+def count_and_find_none(rows, counter_none):
+    request_again = False
+    for item in rows:
+        for values in item:
+            if values is None:
+                counter_none += 1
+                request_again = True
+    if counter_none > 1:
+        raise ValueError("More than 2 Attributes got None values in series data")
+    return request_again
+
+def process_series_with_order_and_exception_handling(series):
+    df = pd.DataFrame(series['values'], columns=series['columns'])
+    desired_order = [
+        "time", "Viavi.Cell.Name", "RRU.PrbUsedDl", "RRU.PrbUsedUl", "PEE.AvgPower", 
+        "DRB.UEThpDl", "Viavi.Geo.x", "Viavi.Geo.y", "Viavi.PEE.EnergyEfficiency", 
+        "Viavi.QoS.Score", "Viavi.Radio.antennaType", "Viavi.Radio.azimuth", 
+        "Viavi.Radio.power"
+    ]
+
+    viavi_cell_name = series['tags'].get("Viavi.Cell.Name", "Unknown")
+    if 'Viavi.Cell.Name' not in df.columns:
+        df.insert(1, 'Viavi.Cell.Name', viavi_cell_name)
+
+    for column in desired_order:
+        if column not in df.columns:
+            df[column] = None
+
+    df = df[[col for col in desired_order if col in df.columns]]
+    df['series_name'] = series['name']
+    return df
+
+def save_to_csv(df, report_num):
+    csv_file_name = f"CellReports_{report_num}.csv"
+    df.to_csv(csv_file_name, index=False)
+    print(f"Saved report to {csv_file_name}")
+# Define base_url and num_reports at the top of the script
+base_url = "http://144.32.33.150/sba/influx/query?q=SELECT%20*%20FROM%20CellReports%20GROUP%20BY%20%22Viavi.Cell.Name%22%20ORDER%20BY%20time%20DESC%20LIMIT%20"
+num_reports = 1  # Adjust this value as needed
+if __name__ == "__main__":
+    # Define the mask value for when the condition is met
+    
+    while True:
+        #mask_value = "1111111111111111111111111111111100000000000000000000000000000000"
+
+        for i in range(1, num_reports + 1):
+            url = f"{base_url}{i}"
+            json_data = request_URL(url)
+            
+            if json_data and 'results' in json_data and json_data['results'][0].get('series'):
+                # Process data
+                final_df_exception_handling = pd.concat(
+                    [process_series_with_order_and_exception_handling(s) for s in json_data['results'][0]['series']],
+                    ignore_index=True
+                )
+                
+                # Filter for only rows with "S3/N77/C1" in the "Viavi.Cell.Name" column
+                final_df_exception_handling1 = final_df_exception_handling[
+                    final_df_exception_handling["Viavi.Cell.Name"] == "S1/B39/C1"
+                ]
+                final_df_exception_handling2 = final_df_exception_handling[
+                    final_df_exception_handling["Viavi.Cell.Name"] == "S2/B40/C1"
+                ]
+                final_df_exception_handling3 = final_df_exception_handling[
+                    final_df_exception_handling["Viavi.Cell.Name"] == "S3/B41/C1"
+                ]
+                #final_df_exception_handling4 = final_df_exception_handling[
+                   # final_df_exception_handling["Viavi.Cell.Name"] == "S4/B42/C1"
+               # ]
+                # Save filtered data to a CSV file
+                #print("FFFFFFFFFFFF:",final_df_exception_handling1)
+               # save_to_csv(final_df_exception_handling1, i)
+               # save_to_csv(final_df_exception_handling2, i)
+               # save_to_csv(final_df_exception_handling3, i)
+                #save_to_csv(final_df_exception_handling4, i)
+
+                # Ensure "DRB.UEThpDl" column is numeric for accurate averaging
+                final_df_exception_handling1["DRB.UEThpDl"] = pd.to_numeric(final_df_exception_handling1["DRB.UEThpDl"], errors='coerce')
+                final_df_exception_handling2["DRB.UEThpDl"] = pd.to_numeric(final_df_exception_handling2["DRB.UEThpDl"], errors='coerce')
+                final_df_exception_handling3["DRB.UEThpDl"] = pd.to_numeric(final_df_exception_handling3["DRB.UEThpDl"], errors='coerce')
+                #final_df_exception_handling4["DRB.UEThpDl"] = pd.to_numeric(final_df_exception_handling["DRB.UEThpDl"], errors='coerce')
+        # Print each value of "DRB.UEThpDl" separately                
+                final_df_list = [
+                   final_df_exception_handling1,
+                   final_df_exception_handling2,
+                   final_df_exception_handling3]
+                  # final_df_exception_handling4,
+                  # ]
+                for i, df in enumerate(final_df_list, start=1):
+                    #print(final_df_exception_handling1)
+                    print(f"Processing final_df_exception_handling{i}...")
+                    if "DRB.UEThpDl" in df.columns:  # Check if the column exists
+
+        # Print each value in the column
+
+        # Calculate and print the average
+                       average_drb_UEThpDl = df["DRB.UEThpDl"].mean()
+                       print(f"Average DRB.UEThpDl for final_df_exception_handling{i}: {average_drb_UEThpDl}")
+                       if i == 1:
+        # Check the threshold and take action
+                        #threshold = 0.0003
+                        threshold =random.uniform(0.002, 0.004)
+                        time.sleep(4)
+                        print("Threshold is:", threshold)
+                        if average_drb_UEThpDl > threshold:
+                          mask_value = "1111111111111111111111111111111100000000000000000000000000000000"
+                         #comm_endpoint(mask_value)
+                          comm_endpoint(mask_value, element_name="s0_cellcu")
+
+
+                          print(f"Average DRB.UEThpDl is above the threshold for final_df_exception_handling{i}. Endpoint called with mask_value:", mask_value)
+                        else:
+                          mask_value = "1111111111111111111111111111111111111111111111111111111111111111"
+                          comm_endpoint(mask_value, element_name="s0_cellcu")
+
+                          print(f"Average DRB.UEThpDl is below the threshold for final_df_exception_handling{i}. No action taken.")
+                       if i == 2:
+        # Check the threshold and take action
+                          #threshold = 0.0003
+                          threshold =random.uniform(0.002, 0.004)
+                          time.sleep(4)
+                          if average_drb_UEThpDl > threshold:
+                             mask_value = "1111111111111111111111111111111100000000000000000000000000000000"
+                         #comm_endpoint(mask_value)
+                             comm_endpoint(mask_value, element_name="s1_cellcu")
+
+                             print(f"Average DRB.UEThpDl is above the threshold for final_df_exception_handling{i}. Endpoint called with mask_value:", mask_value)
+                          else:
+                             mask_value = "1111111111111111111111111111111111111111111111111111111111111111"
+                             comm_endpoint(mask_value, element_name="s1_cellcu")
+                         
+                          print(f"Average DRB.UEThpDl is below the threshold for final_df_exception_handling{i}. No action taken.")
+
+                       if i == 3:
+        # Check the threshold and take action
+                         #threshold = 0.0003
+                         threshold =random.uniform(0.002, 0.004)
+                         time.sleep(4)
+                         if average_drb_UEThpDl < threshold:
+                          mask_value = "1111111111111111111111111111111100000000000000000000000000000000"
+                         #comm_endpoint(mask_value)
+
+                          comm_endpoint(mask_value, element_name="s2_cellcu")
+
+                          print(f"Average DRB.UEThpDl is above the threshold for final_df_exception_handling{i}. Endpoint called with mask_value:", mask_value)
+                         else:
+                             mask_value = "1111111111111111111111111111111111111111111111111111111111111111"
+                             comm_endpoint(mask_value, element_name="s2_cellcu")
+                         
+                             print(f"Average DRB.UEThpDl is below the threshold for final_df_exception_handling{i}. No action taken.", mask_value)
+
+
+
+    else:
+        print(f"'DRB.UEThpDl' column not found in final_df_exception_handling{i}.")
+        
+        
+        time.sleep(10)
+########################Main 3 ??????????? and succsess
+##http://144.32.33.150/sba/influx/query?q=SELECT%20*%20FROM%20CellReports%20GROUP%20BY%20%22Viavi.Cell.Name%22%20ORDER%20BY%20time%20DESC%20LIMIT%201
