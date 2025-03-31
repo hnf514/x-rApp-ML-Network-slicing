@@ -1,0 +1,140 @@
+# -*- coding: utf-8 -*-
+"""
+Updated on Mar 27, 2025
+@author: Vahid
+
+Objective: Automatically deactivate cells with low throughput and low PRB usage,
+triggering handovers, and re-enable if load increases.
+
+This Python program is designed to intelligently manage and optimize the operational status of multiple 5G or LTE cells in a radio access network. Its primary goal is to detect underutilized cells based on real-time performance metrics—specifically low downlink throughput (DRB.UEThpDl) and low physical resource block (PRB) usage (RRU.PrbUsedDl)—and deactivate them by updating their antenna mask configurations. This deactivation not only reduces power consumption but also encourages connected user equipment (UEs) to hand over to neighboring cells that are more actively serving traffic. The program continuously fetches recent CellReports from a centralized Viavi InfluxDB endpoint, processes the data, and calculates average throughput and PRB utilization for each configured cell. If both metrics fall below defined thresholds (e.g., throughput < 0.002 Mbps and PRB usage < 20), the cell is considered underloaded and its antenna is effectively turned off by applying a zero-bit antenna mask. Conversely, if a previously disabled cell starts to show increased activity, it is automatically re-enabled with a full antenna mask, allowing it to serve traffic again. 
+
+To further enhance the intelligence and adaptability of this control logic, the program can be extended with a machine learning-based decision engine. Specifically, a neural network classifier can be trained using historical network data labeled with optimal decisions—such as whether a cell should be active or turned off based on current load and surrounding context. The neural network can learn complex, non-linear relationships between features like throughput trends, PRB usage, UE density, time of day, and signal quality to make better predictions about when and where to offload traffic. This predictive model can replace or supplement the fixed-threshold logic, enabling the system to adapt dynamically to varying traffic patterns and optimize resource allocation in real time. The trained model would continuously infer whether each cell is underperforming and, if so, trigger antenna deactivation to force UE handovers to more suitable cells. This fusion of rule-based automation with data-driven intelligence helps create a more efficient, self-optimizing network management system.
+"""
+import os
+import requests
+import pandas as pd
+import time
+from requests.adapters import HTTPAdapter
+from requests.exceptions import ChunkedEncodingError, RequestException
+from urllib3.util.retry import Retry
+
+# Retry configuration
+retry_strategy = Retry(
+    total=5,
+    backoff_factor=1,
+    status_forcelist=[500, 502, 503, 504],
+)
+
+session = requests.Session()
+session.mount("http://", HTTPAdapter(max_retries=retry_strategy))
+
+# Define all target cells
+cells = [
+    "S1/N28/C1", "S1/N28/C2", "S1/N28/C3",
+    "S1/N77/C1", "S1/N77/C2", "S1/N77/C3",
+    "S2/N28/C1", "S2/N28/C2", "S2/N28/C3",
+    "S2/N77/C1", "S2/N77/C2", "S2/N77/C3",
+    "S3/N28/C1", "S3/N28/C2", "S3/N28/C3"
+]
+
+# Map each cell to a unique internal name and element config
+elements = {}
+cell_status = {}  # Tracks ON/OFF status
+
+cell_idx = 0
+for gnb in ["1", "2", "3"]:
+    for band in ["N28", "N77"]:
+        for cidx in ["C1", "C2", "C3"]:
+            cell_name = f"S{gnb}/{band}/{cidx}"
+            internal_name = f"cell_{cell_idx}"
+            elements[internal_name] = {
+                "ManagedElement": "1193046",
+                "GnbDuFunction": str(int(gnb)),
+                "NrCellDu": str(cell_idx + 10),
+                "NESPolicy": "1"
+            }
+            cell_status[internal_name] = True  # Start as active
+            cell_idx += 1
+
+cell_to_internal = dict(zip(cells, elements.keys()))
+
+
+def comm_endpoint(mask, element_name):
+    antennaMaskName = f"{element_name}:8x8"
+    action_pow = {
+        "attributes": {
+            "policyType": "TRX_CONTROL",
+            "antennaMaskName": antennaMaskName,
+            "antennaMask": mask,
+        }
+    }
+    txt_param = ",".join([f"{k}={v}" for k, v in elements[element_name].items()])
+    put_url = f"http://144.32.33.150/O1/CM/{txt_param}"
+    try:
+        put_response = session.put(put_url, json=action_pow, timeout=10)
+        if put_response.status_code == 200:
+            print(f"Mask updated for {element_name}")
+        else:
+            print(f"Failed for {element_name}, code = {put_response.status_code}")
+    except Exception as e:
+        print(f"comm_endpoint error for {element_name}: {e}")
+
+
+def request_URL(url):
+    try:
+        response = session.get(url, timeout=10, stream=True)
+        response.raise_for_status()
+        return response.json()
+    except (ChunkedEncodingError, RequestException) as e:
+        print(f"Error fetching data: {e}")
+        return None
+
+
+def process_series(series):
+    df = pd.DataFrame(series['values'], columns=series['columns'])
+    name = series['tags'].get("Viavi.Cell.Name", "Unknown")
+    if 'Viavi.Cell.Name' not in df.columns:
+        df.insert(1, 'Viavi.Cell.Name', name)
+    return df
+
+
+if __name__ == "__main__":
+    base_url = "http://144.32.33.150/sba/influx/query?q=SELECT%20*%20FROM%20CellReports%20GROUP%20BY%20%22Viavi.Cell.Name%22%20ORDER%20BY%20time%20DESC%20LIMIT%201"
+
+    PRB_THRESHOLD = 20
+    THROUGHPUT_THRESHOLD = 0.002
+
+    while True:
+        json_data = request_URL(base_url)
+        if json_data and 'results' in json_data and json_data['results'][0].get('series'):
+            all_df = pd.concat([
+                process_series(series)
+                for series in json_data['results'][0]['series']
+            ], ignore_index=True)
+
+            for cell in cells:
+                df = all_df[all_df['Viavi.Cell.Name'] == cell].copy()
+                if not df.empty and {'DRB.UEThpDl', 'RRU.PrbUsedDl'}.issubset(df.columns):
+                    df['DRB.UEThpDl'] = pd.to_numeric(df['DRB.UEThpDl'], errors='coerce')
+                    df['RRU.PrbUsedDl'] = pd.to_numeric(df['RRU.PrbUsedDl'], errors='coerce')
+
+                    avg_thp = df['DRB.UEThpDl'].mean()
+                    avg_prb = df['RRU.PrbUsedDl'].mean()
+
+                    internal_name = cell_to_internal.get(cell)
+                    if not internal_name:
+                        continue
+
+                    if avg_thp < THROUGHPUT_THRESHOLD and avg_prb < PRB_THRESHOLD:
+                        if cell_status[internal_name]:  # If currently ON
+                            print(f"Disabling {cell}: Low traffic ({avg_thp:.4f}) & PRB ({avg_prb:.2f})")
+                            comm_endpoint("0000000000000000000000000000000000000000000000000000000000000000", internal_name)
+                            cell_status[internal_name] = False
+                    else:
+                        if not cell_status[internal_name]:  # If currently OFF, re-enable
+                            print(f"Re-enabling {cell}: Increased load ({avg_thp:.4f}) or PRB ({avg_prb:.2f})")
+                            comm_endpoint("1111111111111111111111111111111111111111111111111111111111111111", internal_name)
+                            cell_status[internal_name] = True
+        else:
+            print("No data received.")
+        time.sleep(10)
