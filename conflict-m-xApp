@@ -1,0 +1,121 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Wed Mar 19 15:23:04 2025
+
+@author: hnf514
+"""
+
+import requests
+import pandas as pd
+import random
+import time
+import matplotlib.pyplot as plt
+from datetime import datetime
+from requests.adapters import HTTPAdapter
+from requests.exceptions import ChunkedEncodingError, RequestException
+from urllib3.util.retry import Retry
+
+# Retry Configuration
+retry_strategy = Retry(
+    total=5,
+    backoff_factor=1,
+    status_forcelist=[500, 502, 503, 504],
+)
+session = requests.Session()
+session.mount("http://", HTTPAdapter(max_retries=retry_strategy))
+
+# Define network elements
+network_elements = {
+    "s0_cellcu": {
+        "ManagedElement": "1193046",
+        "GnbDuFunction": "1",
+        "NrCellDu": "1",
+        "NESPolicy": "1",
+    },
+}
+
+# Placeholder ML function that predicts policy dynamically
+def ml_predict_policy(input_features):
+    """
+    Placeholder function for ML-based decision-making.
+    input_features: dict containing network statistics
+    Returns: policy_type (str), mask_value (str)
+    """
+    varia = random.choice([1, 2, 3, 4])  # Simulating an ML-based decision
+    mask_values_list = [
+        "1111111100000000000000000000000000000000000000000000000000000000",
+        "1111111111111111111111111111111100000000000000000000000000000000",
+        "1111111111111111000000000000000000000000000000000000000000000000",
+    ]
+    mask_value = random.choice(mask_values_list)
+    return varia, mask_value
+
+# Communication function for policy enforcement
+def enforce_policy(mask_value, element_name="s0_cellcu"):
+    """
+    Applies network policy changes based on ML recommendations.
+    """
+    action_pow = {
+        "attributes": {
+            "policyType": "TRX_CONTROL",
+            "antennaMaskName": "S1/B39/C1:8x8",
+            "antennaMask": mask_value,
+        }
+    }
+    put_url = "http://144.32.33.150/O1/CM/ManagedElement=1193046,GnbDuFunction=1,NrCellDu=1,NESPolicy=1"
+    
+    try:
+        put_response = session.put(put_url, json=action_pow, timeout=10)
+        if put_response.status_code == 200:
+            print("Policy applied successfully.")
+        else:
+            print("Failed, response code:", put_response.status_code)
+    except (ChunkedEncodingError, RequestException) as e:
+        print(f"Error enforcing policy: {e}")
+
+# Fetch network data
+def fetch_network_data():
+    url = "http://144.32.33.150/sba/influx/query?q=SELECT%20*%20FROM%20CellReports%20GROUP%20BY%20%22Viavi.Cell.Name%22%20ORDER%20BY%20time%20DESC%20LIMIT%2040"
+    try:
+        response = session.get(url, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except (ChunkedEncodingError, RequestException) as e:
+        print(f"Error fetching data: {e}")
+        return None
+
+if __name__ == "__main__":
+    PAVE = 0
+    avg_power_list = []
+    NUMBERW = 0
+
+    while True:
+        current_time = datetime.now()
+        data = fetch_network_data()
+        if data and 'results' in data and data['results'][0].get('series'):
+            
+            input_features = {"time": current_time.hour}
+            varia, mask_value = ml_predict_policy(input_features)
+            enforce_policy(mask_value)
+            
+            print(f"Policy applied based on ML prediction: varia={varia}, mask_value={mask_value}")
+            
+            avg_power = random.uniform(0.0001, 0.05)  # Simulated power usage
+            avg_power_list.append(avg_power)
+            PAVE += avg_power
+            NUMBERW += 1
+            
+            if NUMBERW > 1:
+                PAVE_Ave = PAVE / NUMBERW
+                power_saving = ((max(avg_power_list) - PAVE_Ave) / max(avg_power_list)) * 100
+                print(f"Power Saving: {power_saving:.2f}%")
+                
+                plt.figure(figsize=(8, 5))
+                plt.plot(avg_power_list, marker='o')
+                plt.xlabel("Iterations")
+                plt.ylabel("Power Consumption (W)")
+                plt.title("Cell Power Consumption Over Time")
+                plt.grid()
+                plt.show()
+        
+        time.sleep(10)  # 10-second wait before the next iteration
