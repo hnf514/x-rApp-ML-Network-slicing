@@ -1,0 +1,101 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Apr  1 14:15:49 2025
+
+@author: hnf514
+"""
+
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Apr  1 2025
+@author: hnf514
+Updated to include automated corrective actions on anomaly detection.
+"""
+
+import torch
+import torch.nn as nn
+import numpy as np
+import pandas as pd
+import random
+import time
+from datetime import datetime
+
+# Assume comm_endpoint is already defined in the environment and imported accordingly
+from existing_module import comm_endpoint
+
+class AnomalyPredictor(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super(AnomalyPredictor, self).__init__()
+        self.l1 = nn.Linear(input_dim, hidden_dim)
+        self.relu1 = nn.ReLU()
+        self.l2 = nn.Linear(hidden_dim, hidden_dim)
+        self.relu2 = nn.ReLU()
+        self.l3 = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, x):
+        x = self.l1(x)
+        x = self.relu1(x)
+        x = self.l2(x)
+        x = self.relu2(x)
+        x = self.l3(x)
+        return x
+
+# Simulate loading KPI history
+data_path = "historical_UE_KPI.csv"
+data = pd.read_csv(data_path)
+features = data[["RSRP", "SINR", "PRB_Usage", "Cell_Load"]].values
+target = data[["Throughput"]].values
+
+features_tensor = torch.tensor(features, dtype=torch.float32)
+target_tensor = torch.tensor(target, dtype=torch.float32)
+
+model = AnomalyPredictor(input_dim=4, hidden_dim=64, output_dim=1)
+loss_fn = nn.MSELoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.0008)
+
+# Training loop
+for epoch in range(400):
+    model.train()
+    output = model(features_tensor)
+    loss = loss_fn(output, target_tensor)
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+# Inference on live KPI (simulate input from real-time API fetcher)
+while True:
+    current_time = datetime.now()
+    simulated_live_input = [
+        random.uniform(-110, -80),
+        random.uniform(5, 25),
+        random.uniform(0.4, 0.9),
+        random.uniform(0.3, 0.8)
+    ]
+    input_tensor = torch.tensor([simulated_live_input], dtype=torch.float32)
+    predicted_throughput = model(input_tensor).item()
+
+    print(f"[{current_time}] Live KPI: {simulated_live_input} -> Predicted Throughput: {predicted_throughput}")
+
+    min_threshold = 0.01
+    max_threshold = 0.03
+
+    if predicted_throughput < min_threshold:
+        print("[ALERT] Predicted throughput is below minimum. Triggering compensation logic.")
+        if simulated_live_input[0] < -100:
+            print("Low RSRP detected. Increasing power.")
+            comm_endpoint(mask_value="1111111111111111111111111111111111111111000000000000000000000000")
+        elif simulated_live_input[2] > 0.7:
+            print("High PRB usage. Reducing mMIMO order to balance load.")
+            comm_endpoint(mask_value="1111111100000000000000000000000000000000111111110000000000000000")
+        else:
+            print("Moderate load anomaly. Applying adaptive control.")
+            comm_endpoint(mask_value="1111111111110000000000000000000000001111111111111111110000000000")
+
+    elif predicted_throughput > max_threshold:
+        print("[INFO] Predicted throughput exceeds target. Optimizing power consumption.")
+        comm_endpoint(mask_value="1111111100000000000000000000000000000000000000000000000000000000")
+
+    else:
+        print("[OK] Throughput within acceptable range. Monitoring continues.")
+
+    time.sleep(6)
